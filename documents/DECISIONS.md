@@ -126,3 +126,128 @@ Format:
 **Alternatives considered:** Python + FastAPI; Go; Ruby on Rails. All are viable; choice is largely about familiarity and ecosystem fit.
 
 **Revisit when:** Performance or scaling needs outgrow the stack (unlikely for years), OR a different stack offers a meaningfully better library for one of the platform APIs.
+
+---
+
+## 2026-05-08: Hosting on Render, database on Supabase
+
+**Decision:** Host the app on Render (separate web service + background worker service). Use Supabase for Postgres, Auth, and Vault (for OAuth refresh token storage). Drop Railway and Neon as alternatives previously listed in ARCHITECTURE.md.
+
+**Context:** The original stack decision (2026-05-04) listed "Railway or Render" and "Supabase or Neon" without committing. Time to commit. User has prior experience with Railway and Supabase but is open to better options.
+
+**Reasoning:**
+- *Worker-first architecture fits Render better.* The app is fundamentally background-worker-heavy: sync workers polling Spotify and Apple Music every few minutes, plus eventual cron-like adaptive polling and propagation jobs. Render treats background workers and cron jobs as first-class service types. Railway has no dedicated worker service type, so workers tend to get shoehorned into web service processes or cron hacks.
+- *Predictable pricing at the shape we'll grow into.* Once we have web + worker + (eventually) cron always-on, Render's flat per-service pricing (~$7/service starter) is easier to budget than Railway's usage-based model for steady workloads.
+- *Reliability matters for success criterion #2.* Project goal is "runs for 30 days without manual intervention." Railway has had a recurring pattern of platform-level outages and free-tier deploy restrictions during peak hours. Render has a more boring, steady track record — which is what we want.
+- *Supabase over Neon for security primitives.* Supabase Vault gives encrypted-at-rest secret storage with a managed key, which is the right tool for OAuth refresh tokens (long-lived, high-value secrets). Supabase Auth + RLS provide defense-in-depth at the database layer if we adopt it later. Neon is pure Postgres with no auth or secret management — would force us to bolt on Clerk/Auth0 separately and never get DB-layer security primitives. Both are SOC 2 Type II compliant.
+- *Familiarity tradeoff is acceptable.* User has used Railway and Supabase before but is fine learning Render. Solo project hours are real, but the cost of fighting the wrong platform later compounds worse than the cost of learning a new dashboard now.
+
+**Alternatives considered:**
+- *Railway for hosting:* Better DX, faster initial deploys, project canvas UI is well-loved. Loses on worker support, pricing predictability for always-on services, and platform reliability.
+- *Fly.io for hosting:* Strong for global multi-region apps. Overkill for a 4-friend group; no free tier for new users; more infrastructure-level control than we need.
+- *Neon for database:* Excellent serverless Postgres with branching and scale-to-zero. But no auth, no secret management, and our workload (always-on workers polling) doesn't benefit from scale-to-zero anyway — workers keep the database warm.
+- *Postgres on Render:* Possible, would give us private networking between app and DB. Loses Supabase Auth and Vault, which we want.
+
+**Revisit when:**
+- Render's pricing becomes painful at scale (unlikely until many groups).
+- We need multi-region deployment for latency reasons (would push toward Fly.io).
+- Supabase changes pricing or licensing in a way that hurts us.
+- A platform offers a meaningfully better integration for Spotify or Apple Music APIs (none currently exist).
+
+---
+
+## 2026-05-08: OAuth refresh tokens stored in Supabase Vault, not in regular Postgres rows
+
+**Decision:** Store OAuth refresh tokens (Spotify and Apple Music) in Supabase Vault rather than as encrypted columns in the `streaming_accounts` table. Access tokens can stay as encrypted columns since they're short-lived.
+
+**Context:** Project priorities call out security as a deliberate concern, even at the cost of complexity. Refresh tokens are the highest-value credentials in the system — compromise of one means an attacker can impersonate a user against their streaming platform indefinitely until revoked.
+
+**Reasoning:**
+- Vault stores secrets encrypted with a key managed by Supabase, separate from the row data. Even a SQL injection that dumps `streaming_accounts` doesn't expose refresh tokens.
+- Defense-in-depth: combines with TLS in transit, encryption at rest at the disk level, and (eventually) RLS policies.
+- Access tokens expire in ~1 hour and are lower-value, so the operational simplicity of pgcrypto column encryption is fine for those.
+
+**Alternatives considered:**
+- *All tokens as pgcrypto-encrypted columns:* Simpler, one mechanism to maintain. Loses the separation-of-concerns benefit for the highest-value credentials.
+- *App-level encryption with key in Render env vars:* Works, but now we're managing key rotation and storage ourselves. Vault is the managed answer to that.
+- *Skip encryption, rely on TLS + disk encryption:* Inadequate for this risk profile.
+
+**Revisit when:**
+- Supabase Vault pricing or limits become a constraint.
+- We move off Supabase (would need to migrate token storage strategy).
+- A security review identifies a better pattern.
+
+---
+
+## 2026-05-08: Backend framework is Fastify
+
+**Decision:** Use Fastify (with TypeScript) as the backend framework. Drop Hono from consideration.
+
+**Context:** ARCHITECTURE.md previously listed "Hono (or Fastify)" without a commitment. Time to commit.
+
+**Reasoning:**
+- *Workload fit.* The app is a long-running Node service with persistent worker processes, BullMQ + Redis connections, and pgcrypto/Vault-encrypted token handling. This is exactly Fastify's lane. Hono's main differentiator — runtime portability to edge environments like Cloudflare Workers — is the one feature we've explicitly designed against by picking Render and a worker-heavy architecture.
+- *Ecosystem fit for the actual integrations.* Spotify and Apple Music OAuth flows benefit from Fastify's mature plugin ecosystem (well-trodden patterns for OAuth, sessions, request validation). Hono's middleware ecosystem is younger, particularly for niche provider integrations — would mean writing more custom adapter code as a solo developer.
+- *Long-term scaling.* Fastify is what production Node services run on at scale. If we ever break the app into services (e.g., one per platform integration, or extracting the track resolution module into a service), Fastify is the obvious foundation. Nothing about Hono helps that future.
+- *TypeScript DX is a wash in practice.* Hono advocates cite better TypeScript inference, and they're right at the margin. Fastify with `@fastify/type-provider-zod` closes the gap to ~90% of Hono's DX, which is more than enough.
+
+**Alternatives considered:**
+- *Hono:* Real winner if we were ever going to deploy to Cloudflare Workers, Vercel Edge, or Deno. We aren't, and our workload (long-running workers, BullMQ, persistent DB connections) is the wrong shape for edge runtimes anyway.
+- *Express:* The "safe boring" choice. Loses on TypeScript ergonomics, JSON Schema validation, and raw performance. No reason to pick it over Fastify in 2026.
+- *NestJS:* Too heavy for a solo project. Convention overhead pays off with a team, not a single developer.
+- *Encore.ts:* Interesting (managed infra + TypeScript) but adds a layer of platform lock-in we don't need on top of the platform decisions we've already made.
+
+**Revisit when:**
+- We ever want to push OAuth callbacks or webhook receivers to the edge for latency reasons (would push toward Hono — but webhook-style sync from streaming APIs doesn't currently exist).
+- The app outgrows a single Node service and we genuinely need to architect for microservices (Fastify still works there, but might re-evaluate whether something like Encore.ts saves enough infra work to justify the switch).
+
+---
+
+## 2026-05-08: Frontend is Next.js (App Router) + Tailwind
+
+**Decision:** Build the web client with Next.js App Router and Tailwind. Pull in shadcn/ui components à la carte (button, card, alert, etc.) when needed. No dashboard template — start from scratch.
+
+**Context:** ARCHITECTURE.md previously listed "Next.js (or plain HTML + HTMX for v0 simplicity)" without committing. v0 is genuinely small enough that HTMX would work, so this needs a longer-term justification.
+
+**Reasoning:**
+- *MusicKit JS is the hardest part of v0 frontend, and it assumes React/Next.js context.* Apple's MusicKit web SDK requires real browser JavaScript with token handling, event listeners, and OAuth-like flows. Every existing tutorial, Stack Overflow answer, and AI-assisted code suggestion for MusicKit JS assumes a React/Next.js environment. Doing it inside HTMX would be a much lonelier path right when we'd want help.
+- *The long-term product vision is mobile-shaped.* PROJECT.md says the social/group/party-mode layer is where this becomes a real product. That layer is mobile-native by definition (people at parties don't pull out laptops). Next.js gives us a clean path to a PWA, and component sharing with React Native if we ever go that direction. HTMX makes both of those harder.
+- *Skill transferability for solo learning.* Time spent learning Next.js compounds across many future projects. Time spent learning HTMX is interesting but narrower.
+- *No Next.js feature is wasted at our scale.* App Router + server components + Tailwind is the standard 2026 stack. The boring default is genuinely the right answer here.
+
+**Anti-decision: don't grab a dashboard template.** The 100+-page admin templates floating around (Apex, Shadcn Admin, etc.) would bury us in unfamiliar code. Start with plain Next.js + Tailwind, copy in shadcn/ui components only as needed. Fight scope creep in the UI layer the same way we fight it in the backend.
+
+**Alternatives considered:**
+- *HTML + HTMX:* Genuinely well-suited to the v0 surface (3-4 pages, mostly read-only with some interactivity for OAuth flows). Loses on MusicKit ecosystem fit and on long-term mobile/PWA path.
+- *Plain React + Vite (no Next.js):* Lighter than Next.js. Loses server components, file-based routing, and the API route convenience for OAuth callbacks. Not worth the savings.
+- *SvelteKit:* Smaller ecosystem and worse fit for the React-centric MusicKit JS examples.
+
+**Revisit when:**
+- We're confident the long-term path is native mobile apps (Swift/Kotlin or React Native), making the web a permanent secondary surface — Next.js still works fine there, just less critical.
+- A specific Next.js limitation actively gets in the way (none expected at our scale).
+
+---
+
+## 2026-05-08: Mobile path deliberately undecided; v0 web stack must keep it open
+
+**Decision:** Do not commit to a mobile strategy yet. Keep the v0 web stack capable of evolving into a PWA, and capable of sharing code with React Native if we go that route.
+
+**Context:** PROJECT.md and prior decisions repeatedly defer mobile to "v1+" without specifying the path. The long-term product vision (party mode, in-app song adding, social features) is mobile-native, so the mobile path will eventually need to be chosen — but not yet. This decision exists to make the deferral explicit and to constrain the v0 stack so we don't accidentally close doors.
+
+**Reasoning:**
+- *Premature mobile decisions are expensive.* Choosing native (Swift + Kotlin), React Native, or PWA each implies different team skills, different backend API shapes, different deployment pipelines, and different feature timelines. Picking now, before v0 is validated, would optimize for a future we don't know we'll have.
+- *The web stack we pick today shouldn't foreclose options.* Next.js + Tailwind keeps PWA and React Native paths cleanly open (PWA is a configuration change; React Native can share components, hooks, and logic with a Next.js codebase). HTMX would have closed both. This is part of why we picked Next.js even though HTMX would technically work for v0.
+- *Three paths we explicitly want to keep available:*
+  1. **Native mobile apps (Swift/Kotlin or React Native) later.** Web stays as a status/admin surface forever.
+  2. **Mobile-optimized PWA.** One Next.js codebase serves desktop and a phone-friendly install experience.
+  3. **Cross-platform via React Native sharing components with Next.js.** Most ambitious; most code reuse.
+
+**Alternatives considered:**
+- *Commit to React Native now.* Premature; v0 isn't validated, and learning React Native solo on top of everything else would balloon the v0 timeline.
+- *Commit to PWA now.* Reasonable but would add scope to v0 (manifest, service worker, offline behavior, mobile UX testing). Defer.
+- *Commit to "web only forever."* Cuts off the social/party-mode product vision. No.
+
+**Revisit when:**
+- v0 is validated against the success criteria.
+- A friend group member or early user surfaces a real mobile use case during a v0 event.
+- We start designing party mode or in-app song adding (these features force the decision).

@@ -6,13 +6,14 @@
 
 ## Stack
 
-- **Backend:** Node.js + TypeScript with Hono (or Fastify). _[Confirm or change]_
-- **Database:** Postgres via Supabase or Neon (free tier)
+- **Backend:** Node.js + TypeScript with Fastify
+- **Database:** Postgres via Supabase (free tier)
 - **Job queue:** BullMQ backed by Redis (Upstash free tier)
-- **Hosting:** Railway or Render, single service
-- **Frontend:** Next.js (or plain HTML + HTMX for v0 simplicity) _[Decide]_
+- **Hosting:** Render — separate web service + background worker service
+- **Frontend:** Next.js (App Router) + Tailwind, with shadcn/ui components added à la carte as needed
 - **Auth (our users):** Supabase Auth magic links, or hardcoded for v0
 - **Auth (streaming platforms):** OAuth 2.0 (Spotify), MusicKit JS + JWT (Apple Music)
+- **Secret storage:** Supabase Vault for OAuth refresh tokens; env vars on Render for service-role keys and other config
 
 ## High-level component diagram
 
@@ -206,8 +207,8 @@ Layered approach, highest confidence first:
 
 ## Token handling
 
-- Access tokens stored encrypted at rest (use pgcrypto or app-level encryption with a key in env vars)
-- Refresh tokens stored encrypted with stricter access controls
+- OAuth refresh tokens stored in Supabase Vault (encrypted at rest with managed key, separate from row data)
+- Access tokens stored encrypted in Postgres (pgcrypto or app-level encryption with key from env vars)
 - Sync workers refresh access tokens automatically when they expire
 - If refresh fails (user revoked access), mark account as disconnected and notify user via email
 
