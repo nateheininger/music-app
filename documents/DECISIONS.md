@@ -251,3 +251,28 @@ Format:
 - v0 is validated against the success criteria.
 - A friend group member or early user surfaces a real mobile use case during a v0 event.
 - We start designing party mode or in-app song adding (these features force the decision).
+
+---
+
+## 2026-05-09: Project will use simpler stack during foundation/learning phase
+
+**Decision:** While the developer (sole contributor) is learning fundamentals, the project will deviate from the documented production stack. Specifically: plain JavaScript before TypeScript, plain Node + npm scripts before Fastify, plain `.env` files before Supabase Vault for secrets, and a single laptop dev environment before Render deployment. The documented stack in ARCHITECTURE.md and prior decisions remains the *target* — this entry establishes a deliberate, traceable gap between target and current state during the learning phase.
+
+**Context:** Solo developer is at near-zero coding experience as of day 1 of build. Original DECISIONS.md entries (2026-05-04 and 2026-05-08) describe a production-grade stack chosen for the right reasons but not appropriate as a starting point for someone who has not yet written a function, used Git, or installed Node. Today's environment-setup session (Homebrew, Node 22 LTS, terminal fundamentals) confirmed the gap is real.
+
+**Reasoning:**
+- *Building security and architectural sophistication on top of unfamiliar fundamentals leads to brittle code.* Encrypted token storage, JWT signing with ES256, BullMQ workers, and Postgres schema design are all things that will be built — but built badly if attempted before the developer can confidently write and debug a basic function.
+- *The documented decisions are not wrong; they are not yet appropriate.* Fastify, Supabase Vault, Render workers, TypeScript — all correct for the production system. None are correct for "I'm learning what a variable is."
+- *Foundation work compounds; rework does not.* Time spent learning JavaScript fundamentals carries forward into TypeScript later. Time spent fighting TypeScript while also learning JavaScript wastes both.
+- *Migration milestones rather than a single big switch.* As skills become comfortable, we migrate piece by piece — JavaScript to TypeScript when types start feeling more like a help than a hindrance; plain Node scripts to Fastify when the API surface justifies a framework; `.env` to Vault when refresh tokens actually exist and need protecting.
+
+**Alternatives considered:**
+- *Stick strictly to the documented stack from day one.* Rejected: too much concept load at once, high risk of demoralization or copying-without-understanding.
+- *Pay a developer to build v0.* Rejected: defeats the developer's stated goal of learning to code, and the $500/year v0 budget rules it out anyway.
+- *Abandon the documented decisions entirely.* Rejected: those decisions are correct for the eventual production system, and re-deciding from scratch later would lose the reasoning captured during the strategy phase.
+- *Use a beginner-oriented stack permanently (e.g., stay on plain JavaScript forever).* Rejected: TypeScript and the production architecture exist in the docs for real reasons (type safety on the platform adapters, secret-handling for high-value credentials). The target is correct.
+
+**Revisit when:**
+- Each migration milestone hits — feel free to migrate to TypeScript, Fastify, or Vault as soon as the relevant fundamentals feel comfortable, rather than waiting for a single big rewrite.
+- v0 is validated against PROJECT.md success criteria and the stack gap has fully closed.
+- The learning trajectory diverges materially from expectations (e.g., project takes much longer or shorter than the 8-14 month informal estimate, or the developer's preferences shift toward a different stack as they learn).
